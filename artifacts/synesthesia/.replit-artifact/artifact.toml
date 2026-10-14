@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "Synesthesia"
+description = "A private, browser-based creative studio that turns photos into deterministic melodies. Analyze images locally, synthesize and export playable audio, and save photo-melody creations in a personal on-device gallery."
+version = "1.0.0"
+id = "artifacts/synesthesia"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 19089
+
+[services.development]
+run = "pnpm --filter @workspace/synesthesia run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/synesthesia", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/synesthesia/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "19089"
+BASE_PATH = "/"

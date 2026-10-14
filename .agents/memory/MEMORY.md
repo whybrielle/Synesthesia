@@ -1,0 +1,1 @@
+- [Synesthesia privacy boundary](synesthesia-privacy.md) — Keep photo analysis, audio generation, and saved creations entirely on the user's device.
