@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, Route, Switch, useLocation, useRoute } from 'wouter';
-import { AudioLines, ArrowLeft, ArrowRight, AudioWaveform, Check, ChevronDown, CircleHelp, Clock3, Disc3, Download, FileAudio2, ImagePlus, Library, LoaderCircle, Music2, Pause, Play, Plus, RotateCcw, Search, SlidersHorizontal, Sparkles, Trash2, Upload, Volume2, X } from 'lucide-react';
+import { AudioLines, ArrowLeft, ArrowRight, AudioWaveform, Check, ChevronDown, CircleHelp, Clock3, Disc3, Download, FileAudio2, Headphones, ImagePlus, Library, LoaderCircle, Music2, Pause, Play, Plus, RotateCcw, Search, SlidersHorizontal, Sparkles, Trash2, Trophy, Upload, Volume2, X } from 'lucide-react';
 import { analyzeImage, mapMelody, melodyDuration, type Analysis, type Creation, type Note, type Preset, type Settings } from './lib/music';
 import { allCreations, deleteCreation, getCreation, saveCreation } from './lib/storage';
 import { exportWav, playMelody } from './lib/audio';
@@ -27,7 +27,7 @@ function Header() {
     <div className="top-note"><span className="privacy-dot"/>A little music, made from your memories</div>
     <nav className="top-nav" aria-label="Main navigation">
       <Link href="/" className={`nav-link ${path === '/' ? 'selected' : ''}`} data-testid="link-studio"><Plus size={15}/> Studio</Link>
-      <Link href="/gallery" className={`nav-link ${path === '/gallery' || path.startsWith('/creation') ? 'selected' : ''}`} data-testid="link-library"><Library size={15}/> Library</Link>
+      <Link href="/gallery" className={`nav-link ${path === '/gallery' || path.startsWith('/creation') ? 'selected' : ''}`} data-testid="link-gallery"><Library size={15}/> Gallery</Link>
     </nav>
   </header>;
 }
@@ -185,7 +185,7 @@ function Studio() {
           <div className="result-name"><span className="step-number">03</span><label><span>Give it a name</span><input value={title} onChange={e => { setTitle(e.target.value); setSaved(false); }} placeholder="A small memory" aria-label="Melody title" data-testid="input-title"/></label><span className="note-count">{notes.length} NOTES</span></div>
           <Player notes={notes} preset={settings.preset} title={title}/>
            <div className="creation-actions">
-             <button className={`save-button ${saved ? 'is-saved' : ''}`} onClick={save} disabled={busy || saved} data-testid="button-save"><span>{saved ? <Check size={17}/> : <Library size={17}/>}</span>{saved ? 'Saved to your library' : 'Keep this memory'}<ArrowRight size={16}/></button>
+              <button className={`save-button ${saved ? 'is-saved' : ''}`} onClick={save} disabled={busy || saved} data-testid="button-save"><span>{saved ? <Check size={17}/> : <Library size={17}/>}</span>{saved ? 'Saved to your Gallery' : 'Keep this memory'}<ArrowRight size={16}/></button>
              <button className="download-button" onClick={() => void downloadMelody()} aria-label="Download melody as WAV" data-testid="button-download-wav"><Download size={16}/><span>WAV</span></button>
            </div>
           <p className="save-caption"><Disc3 size={13}/> Stored only in this browser, never uploaded.</p>
@@ -197,12 +197,33 @@ function Studio() {
   </main>;
 }
 
-function LibraryPage() {
+type QuizDirection = 'melody-photo' | 'photo-melody';
+type QuizRound = { target: Creation; choices: Creation[] };
+
+function GalleryPage() {
   const [items, setItems] = useState<Creation[]>([]), [query, setQuery] = useState(''), [sort, setSort] = useState<'newest' | 'oldest'>('newest');
   const [notice, setNotice] = useState(''), [loading, setLoading] = useState(true);
   const [player, setPlayer] = useState<Creation | null>(null);
+  const [direction, setDirection] = useState<QuizDirection | null>(null);
+  const [rounds, setRounds] = useState<QuizRound[]>([]);
+  const [roundIndex, setRoundIndex] = useState(0);
+  const [answerId, setAnswerId] = useState<string | null>(null);
+  const [score, setScore] = useState(0);
+  const [quizState, setQuizState] = useState<'idle' | 'playing' | 'complete'>('idle');
+  const [quizPlaying, setQuizPlaying] = useState<string | null>(null);
+  const [quizPaused, setQuizPaused] = useState<string | null>(null);
+  const quizControl = useRef<null | Awaited<ReturnType<typeof playMelody>>>(null);
+  const quizToken = useRef(0);
   const loadItems = useCallback(async () => { setLoading(true); try { setItems(await allCreations()); } catch (e) { setNotice(errorMessage(e)); } finally { setLoading(false); } }, []);
   useEffect(() => { void loadItems(); }, [loadItems]);
+  const stopQuizAudio = useCallback(() => {
+    quizToken.current += 1;
+    quizControl.current?.stop();
+    quizControl.current = null;
+    setQuizPlaying(null);
+    setQuizPaused(null);
+  }, []);
+  useEffect(() => () => { quizToken.current += 1; quizControl.current?.stop(); }, []);
   const filtered = useMemo(() => items.filter(i => i.title.toLowerCase().includes(query.toLowerCase())).sort((a, b) => sort === 'newest' ? b.date - a.date : a.date - b.date), [items, query, sort]);
   const rename = async (item: Creation) => {
     const value = window.prompt('Give this memory a name', item.title);
@@ -216,21 +237,120 @@ function LibraryPage() {
     try { await deleteCreation(item.id); setItems(list => list.filter(x => x.id !== item.id)); if (player?.id === item.id) setPlayer(null); }
     catch (e) { setNotice(errorMessage(e)); }
   };
-  const play = (item: Creation) => setPlayer(item);
+  const play = (item: Creation) => { stopQuizAudio(); setPlayer(item); };
   const sortedToggle = () => setSort(s => s === 'newest' ? 'oldest' : 'newest');
+  const shuffle = <T,>(values: T[]) => [...values].sort(() => Math.random() - .5);
+  const beginQuiz = (nextDirection: QuizDirection) => {
+    stopQuizAudio();
+    setDirection(nextDirection);
+    setAnswerId(null);
+    setScore(0);
+    setRoundIndex(0);
+    setPlayer(null);
+    if (items.length < 2) { setQuizState('idle'); return; }
+    const targets = shuffle(items).slice(0, Math.min(5, items.length));
+    setRounds(targets.map(target => ({ target, choices: shuffle([target, ...shuffle(items.filter(item => item.id !== target.id)).slice(0, Math.min(3, items.length - 1))]) })));
+    setQuizState('playing');
+  };
+  const playQuizMelody = async (item: Creation, key: string) => {
+    stopQuizAudio();
+    const token = quizToken.current;
+    setQuizPlaying(key);
+    try {
+      const control = await playMelody(item.notes, item.settings.preset, .55, (time, index) => {
+        if (time === 0 && index === -1 && quizToken.current === token) {
+          quizControl.current = null;
+          setQuizPlaying(null);
+          setQuizPaused(null);
+        }
+      });
+      if (quizToken.current === token) quizControl.current = control;
+      else control.stop();
+    } catch (error) {
+      if (quizToken.current === token) { setQuizPlaying(null); setQuizPaused(null); setNotice(errorMessage(error)); }
+    }
+  };
+  const toggleQuizMelody = async (item: Creation, key: string) => {
+    try {
+      if (quizPlaying === key && quizControl.current) {
+        await quizControl.current.pause();
+        setQuizPlaying(null);
+        setQuizPaused(key);
+        return;
+      }
+      if (quizPaused === key && quizControl.current) {
+        await quizControl.current.resume();
+        setQuizPaused(null);
+        setQuizPlaying(key);
+        return;
+      }
+      await playQuizMelody(item, key);
+    } catch (error) {
+      stopQuizAudio();
+      setNotice(errorMessage(error));
+    }
+  };
+  const answerQuiz = (id: string) => {
+    if (answerId || !rounds[roundIndex]) return;
+    stopQuizAudio();
+    setAnswerId(id);
+    if (id === rounds[roundIndex].target.id) setScore(value => value + 1);
+  };
+  const nextQuizRound = () => {
+    stopQuizAudio();
+    setAnswerId(null);
+    if (roundIndex + 1 >= rounds.length) setQuizState('complete');
+    else setRoundIndex(index => index + 1);
+  };
+  const currentRound = rounds[roundIndex];
   return <main className="library-page page-width fade-up">
-    <div className="library-heading"><div><div className="eyebrow"><span className="eyebrow-line"/>YOUR PRIVATE COLLECTION</div><h1>Memory <em>room.</em></h1><p>Little songs, made from the moments you chose to keep.</p></div><Link href="/" className="new-memory" data-testid="button-new-memory"><Plus size={17}/> Make a new memory</Link></div>
-     {player && <div className="library-player"><button className="close-player" aria-label="Close player" onClick={() => setPlayer(null)} data-testid="button-close-player"><X size={17}/></button><Player key={player.id} notes={player.notes} preset={player.settings.preset} title={player.title} autoPlay/></div>}
-    <div className="library-tools"><label className="search-box"><Search size={17}/><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Find a memory…" aria-label="Search your memories" data-testid="input-search"/>{query && <button onClick={() => setQuery('')} aria-label="Clear search"><X size={14}/></button>}</label><button className="sort-button" onClick={sortedToggle} data-testid="button-sort"><SlidersHorizontal size={15}/>{sort === 'newest' ? 'Newest first' : 'Oldest first'}<ChevronDown size={14}/></button></div>
-    {loading ? <div className="loading-skeleton"><span/><span/><span/></div> :
-      filtered.length ? <div className="memory-grid" data-testid="gallery-grid">{filtered.map((item, index) => <article className="memory-card" key={item.id} data-testid={`card-memory-${item.id}`}>
-        <Link href={`/creation/${item.id}`} className="memory-image-link" data-testid={`link-memory-${item.id}`}><img src={item.image} alt={`Photo for ${item.title}`} /><span className="image-open"><ArrowRight size={16}/></span></Link>
+    <div className="library-heading"><div><div className="eyebrow"><span className="eyebrow-line"/>YOUR PRIVATE COLLECTION</div><h1>The <em>Gallery.</em></h1><p>A collection of images, each with a melody held in its colors.</p></div><Link href="/" className="new-memory" data-testid="button-new-memory"><Plus size={17}/> Make a new memory</Link></div>
+    <section className="quiz-entry" aria-label="Memory quiz">
+      <div className="quiz-entry-copy"><span className="quiz-entry-icon"><Headphones size={18}/></span><div><span className="catalog-label">A LITTLE GAME OF RECOGNITION</span><h2>Can you find the memory in the music?</h2><p>Play a private matching game with the photographs and melodies you’ve kept here.</p></div></div>
+      {quizState === 'idle' ? <div className="quiz-directions">
+        <button className="quiz-start-button" onClick={() => beginQuiz('melody-photo')} disabled={items.length < 2} data-testid="button-quiz-melody-to-photo"><Play size={15} fill="currentColor"/> Hear a melody <ArrowRight size={15}/><span>choose its photo</span></button>
+        <button className="quiz-start-button secondary" onClick={() => beginQuiz('photo-melody')} disabled={items.length < 2} data-testid="button-quiz-photo-to-melody"><ImagePlus size={15}/><span>See a photo</span><ArrowRight size={15}/> choose its melody</button>
+        {items.length < 2 && !loading && <p className="quiz-requirement" data-testid="text-quiz-requirement">Save at least two photo melodies to play. <Link href="/" data-testid="link-quiz-create">Make a photo melody <ArrowRight size={13}/></Link></p>}
+      </div> : quizState === 'playing' && currentRound && direction ? <div className="quiz-session" data-testid="panel-quiz-session">
+        <div className="quiz-session-top"><span className="catalog-label">{direction === 'melody-photo' ? 'LISTEN, THEN LOOK' : 'LOOK, THEN LISTEN'}</span><span className="quiz-progress" data-testid="text-quiz-progress">ROUND {String(roundIndex + 1).padStart(2, '0')} <i/> {String(rounds.length).padStart(2, '0')}</span><button className="quiz-exit" onClick={() => { stopQuizAudio(); setQuizState('idle'); setDirection(null); }} data-testid="button-quiz-exit">End game <X size={14}/></button></div>
+        <div className="quiz-scoreline"><span>Score <strong data-testid="text-quiz-score">{score}</strong></span><div className="quiz-progress-track"><span style={{ width: `${((roundIndex + (answerId ? 1 : 0)) / rounds.length) * 100}%` }}/></div></div>
+        <div className="quiz-prompt">
+          {direction === 'melody-photo' ? <><span className="quiz-prompt-kicker">WHICH PHOTOGRAPH HOLDS THIS SOUND?</span><button className={`quiz-listen ${quizPlaying === 'prompt' ? 'is-playing' : ''}`} onClick={() => void toggleQuizMelody(currentRound.target, 'prompt')} aria-label={quizPlaying === 'prompt' ? 'Pause melody' : quizPaused === 'prompt' ? 'Resume melody' : 'Play the melody'} data-testid="button-quiz-play-prompt"><span className="quiz-listen-mark">{quizPlaying === 'prompt' ? <Pause size={20} fill="currentColor"/> : <Play size={20} fill="currentColor"/>}</span><span><strong>{quizPlaying === 'prompt' ? 'Listening…' : quizPaused === 'prompt' ? 'Paused' : 'Play the melody'}</strong><small>One of your saved photo melodies</small></span><AudioLines size={21}/></button></> :
+          <><span className="quiz-prompt-kicker">WHICH MELODY WAS MADE FROM THIS PHOTO?</span><img className="quiz-question-image" src={currentRound.target.image} alt="Mystery photograph for this round" data-testid="img-quiz-question"/></>}
+        </div>
+        <div className={`quiz-choices ${direction === 'melody-photo' ? 'image-choices' : 'sound-choices'}`} role="group" aria-label={direction === 'melody-photo' ? 'Choose the matching photograph' : 'Choose the matching melody'} data-testid="quiz-choices">
+          {currentRound.choices.map((choice, index) => {
+            const isCorrect = choice.id === currentRound.target.id;
+            const selected = answerId === choice.id;
+            const revealed = Boolean(answerId);
+            return direction === 'melody-photo' ?
+              <button key={choice.id} className={`quiz-image-choice ${revealed && isCorrect ? 'correct' : ''} ${selected && !isCorrect ? 'incorrect' : ''}`} onClick={() => answerQuiz(choice.id)} disabled={revealed} aria-label={`Photograph option ${index + 1}${revealed && isCorrect ? ', correct answer' : ''}`} data-testid={`button-quiz-image-choice-${index + 1}`}>
+                <img src={choice.image} alt={`Photograph option ${index + 1}`} />{revealed && isCorrect && <span className="quiz-correct-mark"><Check size={15}/></span>}<span className="quiz-choice-index">{String(index + 1).padStart(2, '0')}</span>
+              </button> :
+              <div className={`quiz-sound-choice ${revealed && isCorrect ? 'correct' : ''} ${selected && !isCorrect ? 'incorrect' : ''}`} key={choice.id} data-testid={`item-quiz-sound-choice-${index + 1}`}>
+                <button className="quiz-sound-play" onClick={() => void toggleQuizMelody(choice, `choice-${choice.id}`)} disabled={revealed} aria-label={`${quizPlaying === `choice-${choice.id}` ? 'Pause' : quizPaused === `choice-${choice.id}` ? 'Resume' : 'Play'} sound option ${index + 1}`} data-testid={`button-quiz-play-choice-${index + 1}`}>{quizPlaying === `choice-${choice.id}` ? <Pause size={16} fill="currentColor"/> : <Play size={16} fill="currentColor"/>}</button>
+                <span className="quiz-choice-index">{String(index + 1).padStart(2, '0')}</span><span className="quiz-sound-label">Sound {String.fromCharCode(65 + index)}</span>
+                {revealed && isCorrect && <Check className="quiz-sound-check" size={16}/>}
+                <button className="quiz-choose-sound" onClick={() => answerQuiz(choice.id)} disabled={revealed} aria-label={`Choose sound option ${index + 1}`} data-testid={`button-quiz-answer-choice-${index + 1}`}>Choose</button>
+              </div>;
+          })}
+        </div>
+        <div className="quiz-feedback" aria-live="polite" role="status" data-testid="status-quiz-feedback">
+          {answerId && <><span className={answerId === currentRound.target.id ? 'feedback-right' : 'feedback-wrong'}>{answerId === currentRound.target.id ? 'A lovely match.' : 'Not this one.'}</span><span>The memory was <strong>{currentRound.target.title}</strong>.</span><button className="quiz-next" onClick={nextQuizRound} data-testid="button-quiz-next">{roundIndex + 1 === rounds.length ? 'See your result' : 'Next round'} <ArrowRight size={15}/></button></>}
+        </div>
+      </div> : <div className="quiz-complete" data-testid="panel-quiz-complete"><span className="quiz-trophy"><Trophy size={21}/></span><div><span className="catalog-label">THE LAST NOTE HAS LANDED</span><h3>{score === rounds.length ? 'A perfect memory.' : 'A lovely little listening.'}</h3><p>You matched <strong>{score}</strong> of {rounds.length} {rounds.length === 1 ? 'memory' : 'memories'}.</p></div><button className="quiz-start-button" onClick={() => direction && beginQuiz(direction)} data-testid="button-quiz-restart"><RotateCcw size={15}/> Play again</button><button className="quiz-quiet-button" onClick={() => { setQuizState('idle'); setDirection(null); }} data-testid="button-quiz-close-result">Back to the gallery</button></div>}
+    </section>
+      {quizState === 'idle' && player && <div className="library-player"><button className="close-player" aria-label="Close player" onClick={() => setPlayer(null)} data-testid="button-close-player"><X size={17}/></button><Player key={player.id} notes={player.notes} preset={player.settings.preset} title={player.title} autoPlay/></div>}
+     {quizState === 'idle' && <div className="library-tools"><label className="search-box"><Search size={17}/><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Find a memory…" aria-label="Search your Gallery" data-testid="input-search"/>{query && <button onClick={() => setQuery('')} aria-label="Clear search"><X size={14}/></button>}</label><button className="sort-button" onClick={sortedToggle} data-testid="button-sort"><SlidersHorizontal size={15}/>{sort === 'newest' ? 'Newest first' : 'Oldest first'}<ChevronDown size={14}/></button></div>}
+     {quizState === 'idle' && (loading ? <div className="loading-skeleton"><span/><span/><span/></div> :
+       filtered.length ? <div className="memory-grid" data-testid="gallery-grid">{filtered.map((item, index) => <article className="memory-card" key={item.id} data-testid={`card-memory-${item.id}`}>
+         <Link href={`/creation/${item.id}`} className="memory-image-link" data-testid={`link-memory-${item.id}`}><img src={item.image} alt={`Photo for ${item.title}`} /><span className="image-open"><ArrowRight size={16}/></span><span className="art-number">PLATE {String(index + 1).padStart(2, '0')}</span></Link>
         <div className="memory-content"><div className="memory-card-top"><div><Link href={`/creation/${item.id}`} className="memory-title" data-testid={`text-title-${item.id}`}>{item.title}</Link><span className="memory-date"><Clock3 size={12}/>{new Date(item.date).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</span></div><button className="small-play" aria-label={`Play ${item.title}`} onClick={() => play(item)} data-testid={`button-play-${item.id}`}><Play size={15} fill="currentColor"/></button></div>
           <div className="mini-colors">{item.analysis.samples.slice(0, 6).map((c, i) => <i key={i} style={{ backgroundColor: c }}/>)}</div>
           <div className="memory-actions"><button onClick={() => void rename(item)} data-testid={`button-rename-${item.id}`}>Rename</button><button onClick={() => downloadImage(item.image, item.title)} data-testid={`button-download-image-${item.id}`}><Download size={13}/> Photo</button><button onClick={async () => { try { downloadBlob(await exportWav(item.notes, item.settings.preset, .55), `${item.title}.wav`); } catch (e) { setNotice(errorMessage(e)); } }} data-testid={`button-download-wav-${item.id}`}><FileAudio2 size={13}/> WAV</button><button className="delete-action" onClick={() => void remove(item)} aria-label={`Delete ${item.title}`} data-testid={`button-delete-${item.id}`}><Trash2 size={14}/></button></div>
         </div>
-      </article>)}</div> : <div className="empty-library" data-testid="empty-library"><span className="empty-orbit"><AudioLines size={29}/></span><h2>{query ? 'No notes in that name.' : 'A quiet room, for now.'}</h2><p>{query ? 'Try another title or clear your search.' : 'The first song you make from a photo will find its home here.'}</p>{query ? <button className="text-action" onClick={() => setQuery('')}>Clear search</button> : <Link href="/" className="new-memory"><Plus size={16}/> Make your first memory</Link>}</div>}
-    <div className="library-foot">{items.length} {items.length === 1 ? 'memory' : 'memories'} · kept on this device</div>
+       </article>)}</div> : <div className="empty-library" data-testid="empty-library"><span className="empty-orbit"><AudioLines size={29}/></span><h2>{query ? 'No notes in that name.' : 'A quiet room, for now.'}</h2><p>{query ? 'Try another title or clear your search.' : 'The first song you make from a photo will find its home here.'}</p>{query ? <button className="text-action" onClick={() => setQuery('')}>Clear search</button> : <Link href="/" className="new-memory"><Plus size={16}/> Make your first memory</Link>}</div>)}
+     {quizState === 'idle' && <div className="library-foot">{items.length} {items.length === 1 ? 'memory' : 'memories'} · kept on this device</div>}
     <Notice message={notice} onClose={() => setNotice('')}/>
   </main>;
 }
@@ -266,9 +386,9 @@ function CreationPage() {
     void saveCreation(updated).catch(e => setNotice(errorMessage(e)));
   };
   if (loading) return <main className="detail-page page-width"><div className="detail-skeleton"/></main>;
-  if (!item) return <main className="detail-page page-width"><Link href="/gallery" className="back-link"><ArrowLeft size={16}/> Back to library</Link><div className="empty-library"><span className="empty-orbit"><AudioLines size={29}/></span><h2>This memory isn’t here.</h2><p>It may have been removed from your local library.</p><Link href="/" className="new-memory"><Plus size={16}/> Make a new memory</Link></div><Notice message={notice} onClose={() => setNotice('')}/></main>;
+  if (!item) return <main className="detail-page page-width"><Link href="/gallery" className="back-link"><ArrowLeft size={16}/> Back to Gallery</Link><div className="empty-library"><span className="empty-orbit"><AudioLines size={29}/></span><h2>This memory isn’t here.</h2><p>It may have been removed from your local Gallery.</p><Link href="/" className="new-memory"><Plus size={16}/> Make a new memory</Link></div><Notice message={notice} onClose={() => setNotice('')}/></main>;
   return <main className="detail-page page-width fade-up">
-    <Link href="/gallery" className="back-link" data-testid="link-back-library"><ArrowLeft size={16}/> Back to library</Link>
+    <Link href="/gallery" className="back-link" data-testid="link-back-gallery"><ArrowLeft size={16}/> Back to Gallery</Link>
     <div className="detail-layout"><div className="detail-art"><img src={item.image} alt={`Original memory: ${item.title}`} data-testid="img-original"/><div className="detail-color"><span style={{ backgroundColor: item.analysis.dominant }}/><div><small>THE COLOR THAT STAYED</small><strong>{item.analysis.dominant}</strong></div></div></div>
       <section className="detail-copy"><div className="eyebrow"><span className="eyebrow-line"/>A MEMORY, SET TO MUSIC</div><h1 data-testid="text-creation-title">{item.title}</h1><span className="detail-date"><Clock3 size={14}/>{new Date(item.date).toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' })}</span>
         <p className="detail-description">A melody found in the colors, light and details of this photograph. Kept here, just for you.</p>
@@ -284,6 +404,6 @@ function CreationPage() {
 function NotFound() { return <main className="empty-library page-width"><span className="empty-orbit"><AudioLines size={28}/></span><h2>This page is a little quiet.</h2><Link href="/" className="new-memory"><ArrowLeft size={15}/> Return to the studio</Link></main>; }
 
 function App() {
-  return <div className="app-shell"><div className="grain"/><Header/><Switch><Route path="/" component={Studio}/><Route path="/gallery" component={LibraryPage}/><Route path="/creation/:id" component={CreationPage}/><Route component={NotFound}/></Switch></div>;
+  return <div className="app-shell"><div className="grain"/><Header/><Switch><Route path="/" component={Studio}/><Route path="/gallery" component={GalleryPage}/><Route path="/creation/:id" component={CreationPage}/><Route component={NotFound}/></Switch></div>;
 }
 export default App;
