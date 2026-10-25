@@ -1,1 +1,2 @@
 - [Synesthesia privacy boundary](synesthesia-privacy.md) — Keep photo analysis, audio generation, and saved creations entirely on the user's device.
+- [Synesthesia audience](synesthesia-audience.md) — Design for older adults and healthcare aides with clarity, dignity, and low-friction controls.
